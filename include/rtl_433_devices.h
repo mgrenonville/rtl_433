@@ -249,6 +249,7 @@
     DECL(revolt_nc5462) \
     DECL(lacrosse_tx31u) \
     DECL(tpms_eezrv) \
+    DECL(sx1211) \
 
     /* Add new decoders here. */
 

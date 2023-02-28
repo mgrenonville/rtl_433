@@ -212,6 +212,7 @@ add_library(r_433 STATIC
     devices/springfield.c
     devices/srsmith_pool_srs_2c_tx.c
     devices/steelmate.c
+    devices/sx1211.c
     devices/telldus_ft0385r.c
     devices/tfa_14_1504_v2.c
     devices/tfa_30_3196.c
