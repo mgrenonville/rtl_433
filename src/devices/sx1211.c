@@ -110,6 +110,10 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     size      = msg[4];
     to_addr   = msg[5];
     from_addr = msg[6];
+    if(size > SX1211_MAX_LENGHT_FIFO - 1) // FIFO is 64 bytes long, and one byte is used by size itself
+    {
+        return DECODE_ABORT_LENGTH;
+    }
 
     print_row_bytes(payload, msg + 4, size + 1);
 
