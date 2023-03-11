@@ -38,10 +38,12 @@ Data layout:
  *
  */
 
-#define SX1211_STARTBYTE       0xAA
-#define SX1211_CRC_POLY        0x1021
-#define SX1211_CRC_INIT        0x236b
-#define SX1211_MAX_LENGHT_FIFO 64
+#define SX1211_STARTBYTE        0xAA
+#define SX1211_CRC_POLY         0x1021
+#define SX1211_CRC_INIT         0x236b
+#define SX1211_MAX_LENGTH_FIFO  64
+#define SX1211_SYNC_WORD_LENGTH 4
+#define SX1211_CRC_LENGTH 4
 
 static void print_row_bytes(char *row_bytes, uint8_t *source, int num)
 {
@@ -51,25 +53,20 @@ static void print_row_bytes(char *row_bytes, uint8_t *source, int num)
         sprintf(&row_bytes[2 * col], "%02x", source[col]);
     }
     // remove last nibble if needed
-    row_bytes[2 * (num + 3)] = '\0';
+    row_bytes[2 * (num)] = '\0';
 }
 
 static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
 {
     data_t *data;
-    int r;      // a row index
-    uint8_t *b; // bits of a row
 
-    uint8_t *network_id[4 * 2];
-    uint8_t *payload[SX1211_MAX_LENGHT_FIFO * 2];
-    uint8_t *raw_payload[(SX1211_MAX_LENGHT_FIFO + 10) * 2];
-    int parity;
+    char network_id[SX1211_SYNC_WORD_LENGTH * 2 + 1];
+    char payload[SX1211_MAX_LENGTH_FIFO * 2 + 1];
+    char raw_payload[(SX1211_MAX_LENGTH_FIFO + SX1211_SYNC_WORD_LENGTH + SX1211_CRC_LENGTH) * 2 +1];
+
     uint16_t computed_crc;
     uint16_t message_crc;
-    uint16_t sensor_id;
     uint8_t size, to_addr, from_addr;
-
-    int16_t value;
 
     /*
      * Early debugging aid to see demodulated bits in buffer and
@@ -92,7 +89,7 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
         if (possible_start < 32) {
             start_pos = possible_start;
         }
-        decoder_logf(decoder, 1, __func__, "Searching init pattern at %d, start_pos = %d", bit, start_pos, bitbuffer);
+        decoder_logf(decoder, 1, __func__, "Searching init pattern at %d, start_pos = %d", bit, start_pos);
         decoder_log_bitrow(decoder, 1, __func__, bitbuffer->bb[0] + start_pos, 4 * 8, "Here");
 
         if (start_pos >= bitbuffer->bits_per_row[0]) {
@@ -102,7 +99,7 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     }
     uint8_t msg_bytes = (bitbuffer->bits_per_row[0] - start_pos) / 8;
 
-    uint8_t msg[SX1211_MAX_LENGHT_FIFO];
+    uint8_t msg[SX1211_MAX_LENGTH_FIFO];
     bitbuffer_extract_bytes(bitbuffer, 0, start_pos + sizeof(start_match) * 8, msg, msg_bytes * 8);
 
     print_row_bytes(network_id, msg, 4);
@@ -110,7 +107,7 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     size      = msg[4];
     to_addr   = msg[5];
     from_addr = msg[6];
-    if(size > SX1211_MAX_LENGHT_FIFO - 1) // FIFO is 64 bytes long, and one byte is used by size itself
+    if (size > SX1211_MAX_LENGTH_FIFO - 1) // FIFO is 64 bytes long, and one byte is used by size itself
     {
         return DECODE_ABORT_LENGTH;
     }
@@ -136,7 +133,7 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
 
     decoder_output_data(decoder, data);
     return 1;
-};
+}
 
 /*
  * List of fields that may appear in the output
