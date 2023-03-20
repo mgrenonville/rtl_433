@@ -38,9 +38,12 @@ Data layout:
  *
  */
 
-#define SX1211_STARTBYTE        0xAA
-#define FILTER_NETWORK_ID       1
-#define NETWORK_ID              0x05, 0xdb, 0xe7, 0x6b
+#define SX1211_STARTBYTE  0xAA
+#define FILTER_NETWORK_ID 1
+// test network id
+// #define NETWORK_ID 0x05, 0xdb, 0xe7, 0x6b
+// Mine
+#define NETWORK_ID 0x05, 0xda, 0x2e, 0xe2
 
 #define SX1211_CRC_POLY         0x1021
 #define SX1211_MAX_LENGTH_FIFO  64
@@ -71,7 +74,7 @@ static long selectCRCInit(int length)
     }
 }
 
-static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
+static int sx1211_decode(r_device *decoder, int row, bitbuffer_t *bitbuffer, int start_pos, int preamble_size)
 {
     data_t *data;
 
@@ -83,46 +86,7 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     uint16_t message_crc;
     uint8_t size, to_addr, from_addr;
 
-    /*
-     * Early debugging aid to see demodulated bits in buffer and
-     * to determine if your limit settings are matched and firing
-     * this decode callback.
-     *
-     * 1. Enable with -vvv (debug decoders)
-     * 2. Delete this block when your decoder is working
-     */
-    decoder_log_bitbuffer(decoder, 1, __func__, bitbuffer, "");
-
-    unsigned int start_pos     = 0;
-    unsigned int preamble_size = 0;
-
-    if (FILTER_NETWORK_ID == 1) {
-        uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, NETWORK_ID}; // preamble + network_id
-        start_pos                   = bitbuffer_search(bitbuffer, 0, 0, start_match, sizeof(start_match) * 8);
-        preamble_size               = sizeof(start_match) - 4;
-    }
-    else {
-        uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE}; // preamble only
-        decoder_log(decoder, 1, __func__, "Align on 4*0xAA before message in the first byte");
-
-        for (int bit = 0; bit < 3 * 8 + 1; bit++) {
-
-            unsigned int possible_start = bitbuffer_search(bitbuffer, 0, bit, start_match, sizeof(start_match) * 8);
-            if (possible_start < 32) {
-                start_pos = possible_start;
-            }
-            decoder_logf(decoder, 1, __func__, "Searching init pattern at %d, start_pos = %d", bit, start_pos);
-            decoder_log_bitrow(decoder, 1, __func__, bitbuffer->bb[0] + start_pos, 4 * 8, "Here");
-
-            if (start_pos >= bitbuffer->bits_per_row[0]) {
-                decoder_log(decoder, 1, __func__, "Not found");
-                return DECODE_ABORT_EARLY;
-            }
-        }
-        preamble_size = sizeof(start_match);
-    }
-
-    uint8_t msg_bytes = (bitbuffer->bits_per_row[0] - start_pos) / 8;
+    uint8_t msg_bytes = (bitbuffer->bits_per_row[row] - start_pos) / 8;
 
     uint8_t msg[SX1211_MAX_LENGTH_FIFO];
     bitbuffer_extract_bytes(bitbuffer, 0, start_pos + (preamble_size)*8, msg, msg_bytes * 8);
@@ -159,6 +123,63 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     decoder_output_data(decoder, data);
     return 1;
 }
+
+static int sx1211_callback(r_device *decoder, bitbuffer_t *bitbuffer)
+{
+
+    /*
+     * Early debugging aid to see demodulated bits in buffer and
+     * to determine if your limit settings are matched and firing
+     * this decode callback.
+     *
+     * 1. Enable with -vvv (debug decoders)
+     * 2. Delete this block when your decoder is working
+     */
+    decoder_log_bitbuffer(decoder, 1, __func__, bitbuffer, "");
+
+    int row;
+    unsigned start_pos = 0;
+    int ret                    = 0;
+    unsigned int preamble_size = 0;
+
+    for (row = 0; row < bitbuffer->num_rows; ++row) {
+        if (FILTER_NETWORK_ID == 1) {
+            uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, NETWORK_ID}; // preamble + network_id
+            start_pos                   = bitbuffer_search(bitbuffer, row, 0, start_match, sizeof(start_match) * 8);
+            preamble_size               = sizeof(start_match) - 4;
+            if (start_pos >= bitbuffer->bits_per_row[row] && bitbuffer->num_rows == row) {
+                decoder_log(decoder, 1, __func__, "Not found");
+                return DECODE_ABORT_EARLY;
+            }
+            else if (start_pos < bitbuffer->bits_per_row[row]) {
+                return sx1211_decode(decoder, row, bitbuffer, start_pos, preamble_size);
+            }
+        }
+        else {
+            uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE}; // preamble only
+            decoder_log(decoder, 1, __func__, "Align on 4*0xAA before message in the first byte");
+
+            for (int bit = 0; bit < 3 * 8 + 1; bit++) {
+
+                unsigned int possible_start = bitbuffer_search(bitbuffer, row, bit, start_match, sizeof(start_match) * 8);
+                if (possible_start < 32) {
+                    start_pos = possible_start;
+                }
+                decoder_logf(decoder, 1, __func__, "Searching init pattern at %d, start_pos = %d", bit, start_pos);
+                decoder_log_bitrow(decoder, 1, __func__, bitbuffer->bb[0] + start_pos, 4 * 8, "Here");
+
+                if (start_pos >= bitbuffer->bits_per_row[row]) {
+                    decoder_log(decoder, 1, __func__, "Not found");
+                    return DECODE_ABORT_EARLY;
+                }
+            }
+            preamble_size = sizeof(start_match);
+
+            return sx1211_decode(decoder, row, bitbuffer, start_pos, preamble_size);
+        }
+    }
+    return DECODE_ABORT_EARLY;
+};
 
 /*
  * List of fields that may appear in the output
@@ -209,7 +230,7 @@ r_device const sx1211 = {
         .long_width  = 38,   // long gap is ~38 us
         .reset_limit = 4200, // a bit longer than packet gap
         .tolerance   = 3,    // a bit longer than packet gap
-        .decode_fn   = &sx1211_decode,
+        .decode_fn   = &sx1211_callback,
         .disabled    = 0, // disabled and hidden, use 0 if there is a MIC, 1 otherwise
         .fields      = output_fields,
 };
