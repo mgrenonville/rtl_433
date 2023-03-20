@@ -39,11 +39,13 @@ Data layout:
  */
 
 #define SX1211_STARTBYTE        0xAA
+#define FILTER_NETWORK_ID       1
+#define NETWORK_ID              0x05, 0xdb, 0xe7, 0x6b
+
 #define SX1211_CRC_POLY         0x1021
-#define SX1211_CRC_INIT         0x236b
 #define SX1211_MAX_LENGTH_FIFO  64
 #define SX1211_SYNC_WORD_LENGTH 4
-#define SX1211_CRC_LENGTH 4
+#define SX1211_CRC_LENGTH       4
 
 static void print_row_bytes(char *row_bytes, uint8_t *source, int num)
 {
@@ -56,13 +58,26 @@ static void print_row_bytes(char *row_bytes, uint8_t *source, int num)
     row_bytes[2 * (num)] = '\0';
 }
 
+static long selectCRCInit(int length)
+{
+    switch (length) {
+    case 0x17:
+        return 0x236b;
+    case 0x31:
+        return 0x1598;
+        // TODO continue with reveng.
+    default:
+        return 0x0;
+    }
+}
+
 static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
 {
     data_t *data;
 
     char network_id[SX1211_SYNC_WORD_LENGTH * 2 + 1];
     char payload[SX1211_MAX_LENGTH_FIFO * 2 + 1];
-    char raw_payload[(SX1211_MAX_LENGTH_FIFO + SX1211_SYNC_WORD_LENGTH + SX1211_CRC_LENGTH) * 2 +1];
+    char raw_payload[(SX1211_MAX_LENGTH_FIFO + SX1211_SYNC_WORD_LENGTH + SX1211_CRC_LENGTH) * 2 + 1];
 
     uint16_t computed_crc;
     uint16_t message_crc;
@@ -78,29 +93,39 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
      */
     decoder_log_bitbuffer(decoder, 1, __func__, bitbuffer, "");
 
-    uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE}; // preamble only
+    unsigned int start_pos     = 0;
+    unsigned int preamble_size = 0;
 
-    unsigned int start_pos = 0;
-    decoder_log(decoder, 1, __func__, "Align on 4*0xAA before message in the first byte");
-
-    for (int bit = 0; bit < 3 * 8 + 1; bit++) {
-
-        unsigned int possible_start = bitbuffer_search(bitbuffer, 0, bit, start_match, sizeof(start_match) * 8);
-        if (possible_start < 32) {
-            start_pos = possible_start;
-        }
-        decoder_logf(decoder, 1, __func__, "Searching init pattern at %d, start_pos = %d", bit, start_pos);
-        decoder_log_bitrow(decoder, 1, __func__, bitbuffer->bb[0] + start_pos, 4 * 8, "Here");
-
-        if (start_pos >= bitbuffer->bits_per_row[0]) {
-            decoder_log(decoder, 1, __func__, "Not found");
-            return DECODE_ABORT_EARLY;
-        }
+    if (FILTER_NETWORK_ID == 1) {
+        uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, NETWORK_ID}; // preamble + network_id
+        start_pos                   = bitbuffer_search(bitbuffer, 0, 0, start_match, sizeof(start_match) * 8);
+        preamble_size               = sizeof(start_match) - 4;
     }
+    else {
+        uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE}; // preamble only
+        decoder_log(decoder, 1, __func__, "Align on 4*0xAA before message in the first byte");
+
+        for (int bit = 0; bit < 3 * 8 + 1; bit++) {
+
+            unsigned int possible_start = bitbuffer_search(bitbuffer, 0, bit, start_match, sizeof(start_match) * 8);
+            if (possible_start < 32) {
+                start_pos = possible_start;
+            }
+            decoder_logf(decoder, 1, __func__, "Searching init pattern at %d, start_pos = %d", bit, start_pos);
+            decoder_log_bitrow(decoder, 1, __func__, bitbuffer->bb[0] + start_pos, 4 * 8, "Here");
+
+            if (start_pos >= bitbuffer->bits_per_row[0]) {
+                decoder_log(decoder, 1, __func__, "Not found");
+                return DECODE_ABORT_EARLY;
+            }
+        }
+        preamble_size = sizeof(start_match);
+    }
+
     uint8_t msg_bytes = (bitbuffer->bits_per_row[0] - start_pos) / 8;
 
     uint8_t msg[SX1211_MAX_LENGTH_FIFO];
-    bitbuffer_extract_bytes(bitbuffer, 0, start_pos + sizeof(start_match) * 8, msg, msg_bytes * 8);
+    bitbuffer_extract_bytes(bitbuffer, 0, start_pos + (preamble_size)*8, msg, msg_bytes * 8);
 
     print_row_bytes(network_id, msg, 4);
 
@@ -117,7 +142,7 @@ static int sx1211_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     print_row_bytes(raw_payload, msg, 4 + 1 + size + 2);
 
     message_crc  = (msg[4 + 1 + size] << 8) + (msg[4 + 1 + size + 1]);
-    computed_crc = crc16(msg + 4, size + 1, SX1211_CRC_POLY, SX1211_CRC_INIT);
+    computed_crc = crc16(msg + 4, size + 1, SX1211_CRC_POLY, selectCRCInit(size));
 
     data = data_make(
             "model", "", DATA_STRING, "sx1211",
