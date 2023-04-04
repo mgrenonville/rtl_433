@@ -16,6 +16,10 @@ The device uses FSK encoding,
 The device sends a transmission every 10 minutes.
 A transmission starts with a preamble of 3 to 5 0xAA,
 
+This device needs the -Y classic to work properly.
+$ rtl_433 -f 868900000 -R 242 -s 1000k -Y classic  -F json:dump.json
+
+
 (describe the data and payload, e.g.)
 Data layout:
     NN NN NN NN SS PP... CC CC
@@ -43,7 +47,8 @@ Data layout:
 // test network id
 // #define NETWORK_ID 0x05, 0xdb, 0xe7, 0x6b
 // Mine
-#define NETWORK_ID 0x05, 0xda, 0x2e, 0xe2
+#define NETWORK_ID              0x12, 0x34, 0x56, 0x78
+#define ASSOCIATION_NETWORK_ID  0xFF, 0xFF, 0xFF, 0xFF
 
 #define SX1211_CRC_POLY         0x1021
 #define SX1211_MAX_LENGTH_FIFO  64
@@ -138,25 +143,35 @@ static int sx1211_callback(r_device *decoder, bitbuffer_t *bitbuffer)
     decoder_log_bitbuffer(decoder, 1, __func__, bitbuffer, "");
 
     int row;
-    unsigned start_pos = 0;
+    unsigned start_pos         = 0;
     int ret                    = 0;
     unsigned int preamble_size = 0;
 
     for (row = 0; row < bitbuffer->num_rows; ++row) {
         if (FILTER_NETWORK_ID == 1) {
             uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, NETWORK_ID}; // preamble + network_id
-            start_pos                   = bitbuffer_search(bitbuffer, row, 0, start_match, sizeof(start_match) * 8);
             preamble_size               = sizeof(start_match) - 4;
+            start_pos                   = bitbuffer_search(bitbuffer, row, 0, start_match, sizeof(start_match) * 8);
+            if (start_pos >= bitbuffer->bits_per_row[row]) {
+                // Also try to search on ASSOCIATION_NETWORK_ID if not found on NETWORK_ID
+                uint8_t const start_match_association[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, ASSOCIATION_NETWORK_ID}; // preamble + network_id = FFFFFFFF
+                start_pos = bitbuffer_search(bitbuffer, row, 0, start_match_association, sizeof(start_match_association) * 8);
+            }
             if (start_pos >= bitbuffer->bits_per_row[row] && bitbuffer->num_rows == row) {
                 decoder_log(decoder, 1, __func__, "Not found");
                 return DECODE_ABORT_EARLY;
             }
             else if (start_pos < bitbuffer->bits_per_row[row]) {
-                return sx1211_decode(decoder, row, bitbuffer, start_pos, preamble_size);
+                int ret = sx1211_decode(decoder, row, bitbuffer, start_pos, preamble_size);
+                if (ret < 0 || bitbuffer->num_rows == row) {
+                    return ret;
+                }
             }
         }
         else {
             uint8_t const start_match[] = {SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE, SX1211_STARTBYTE}; // preamble only
+            preamble_size               = sizeof(start_match);
+
             decoder_log(decoder, 1, __func__, "Align on 4*0xAA before message in the first byte");
 
             for (int bit = 0; bit < 3 * 8 + 1; bit++) {
@@ -168,14 +183,14 @@ static int sx1211_callback(r_device *decoder, bitbuffer_t *bitbuffer)
                 decoder_logf(decoder, 1, __func__, "Searching init pattern at %d, start_pos = %d", bit, start_pos);
                 decoder_log_bitrow(decoder, 1, __func__, bitbuffer->bb[0] + start_pos, 4 * 8, "Here");
 
-                if (start_pos >= bitbuffer->bits_per_row[row]) {
+                if (start_pos >= bitbuffer->bits_per_row[row] && bitbuffer->num_rows == row) {
                     decoder_log(decoder, 1, __func__, "Not found");
                     return DECODE_ABORT_EARLY;
                 }
             }
-            preamble_size = sizeof(start_match);
-
-            return sx1211_decode(decoder, row, bitbuffer, start_pos, preamble_size);
+            if (start_pos < bitbuffer->bits_per_row[row]) {
+                return sx1211_decode(decoder, row, bitbuffer, start_pos, preamble_size);
+            }
         }
     }
     return DECODE_ABORT_EARLY;
@@ -226,11 +241,12 @@ static char const *output_fields[] = {
 r_device const sx1211 = {
         .name        = "SX1211",
         .modulation  = FSK_PULSE_PCM,
-        .short_width = 40,   // short gap is ~38 us
-        .long_width  = 40,   // long gap is ~38 us
-        .reset_limit = 40200, // a bit longer than packet gap
-        .tolerance   = 10,    // a bit longer than packet gap
+        .short_width = 40, // short gap is ~38 us
+        .long_width  = 40, // long gap is ~38 us
+        .reset_limit = 40 * 64,
+        .tolerance   = 10,
         .decode_fn   = &sx1211_callback,
         .disabled    = 0, // disabled and hidden, use 0 if there is a MIC, 1 otherwise
         .fields      = output_fields,
+        .verbose     = 1,
 };
